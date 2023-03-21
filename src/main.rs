@@ -1,11 +1,11 @@
 use anyhow::Result;
 use chrono::Datelike;
 use chrono::NaiveDateTime;
+use futures::future::join_all;
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 use time::macros::datetime;
 use yahoo_finance_api::{Quote, YahooConnector};
-
 #[derive(Debug, Clone, Copy)]
 struct RawTransaction {
     stock: usize,
@@ -86,30 +86,44 @@ fn find_max_n_day(
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let api_start = Instant::now();
     let provider = YahooConnector::new();
+
     //let tickers = ["GOOG", "AMZN", "META", "MSFT", "AAPL"];
     let tickers = ["AAL", "DAL", "UAL", "LUV", "HA"];
     let start = datetime!(2023-1-1 0:00:00.00 UTC);
     let end = datetime!(2023-2-1 23:59:59.99 UTC);
+
     // returns historic quotes with daily interval
-    let computation_start = Instant::now();
-    let mut quotes_entreprise = vec![];
-    for ticker in tickers {
-        let quotes: Vec<DayPrice> = provider
-            .get_quote_history(&ticker, start, end)
-            .await?
-            .quotes()?
+    let quotes_enterprise: Vec<Vec<DayPrice>> = join_all(
+        tickers
+            .iter()
+            .map(|ticker| provider.get_quote_history(ticker, start, end)),
+    )
+    .await
+    .into_iter()
+    .filter_map(|x| x.ok()?.quotes().ok())
+    .map(|quotes| {
+        quotes
             .iter()
             .map(|quote| quote.into())
-            .collect();
-        quotes_entreprise.push(quotes);
-    }
-    let (value, transactions) = find_max_n_day(&quotes_entreprise, &tickers);
+            .collect::<Vec<DayPrice>>()
+    })
+    .collect();
+
     println!(
-        "La valeur maximale est {:.2} calculée en {} ms",
-        1000000.0 * value,
-        computation_start.elapsed().as_millis()
+        "Données obtenues de Yahoo finance en {} ms",
+        api_start.elapsed().as_millis()
     );
+
+    let computation_start = Instant::now();
+    let (value, transactions) = find_max_n_day(&quotes_enterprise, &tickers);
+    println!(
+        "La valeur maximale est {:.2} calculée en {} µs.",
+        1000000.0 * value,
+        computation_start.elapsed().as_micros()
+    );
+
     println!("{}", serde_json::to_string_pretty(&transactions)?);
     Ok(())
 }
